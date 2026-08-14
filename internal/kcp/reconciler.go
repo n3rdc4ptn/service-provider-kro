@@ -39,7 +39,6 @@ const (
 	kubeconfigKey       = "kubeconfig"
 	kubeconfigSecretFmt = "kcp-%s-kubeconfig"
 
-	deletionBlockedRequeue = 10 * time.Second
 )
 
 // KCPReconciler reconciles KroVersionRequest objects across consumer workspaces.
@@ -237,16 +236,8 @@ func (r *KCPReconciler) handleDeletion(ctx context.Context, clusterName string, 
 	l := logf.FromContext(ctx)
 	ns := tenantNamespace(clusterName)
 
-	// Check for remaining ResourceGraphDefinitions
-	remaining, err := countResourceGraphDefinitions(ctx, clusterClient)
-	if err != nil {
-		l.Error(err, "failed to count ResourceGraphDefinitions")
-	} else if remaining > 0 {
-		l.Info("deletion blocked: waiting for ResourceGraphDefinitions to be removed", "count", remaining)
-		return ctrl.Result{RequeueAfter: deletionBlockedRequeue}, nil
-	}
-
-	// Delete platform resources
+	// ponytail: kro CRDs are left in the workspace intentionally — no RGD check needed.
+	// Delete platform resources (HelmReleases + OCI repo)
 	objects := []client.Object{
 		&sourcev1.OCIRepository{ObjectMeta: metav1.ObjectMeta{Name: ociRepositoryName, Namespace: ns}},
 		&helmv2.HelmRelease{ObjectMeta: metav1.ObjectMeta{Name: helmReleaseName, Namespace: ns}},
@@ -269,6 +260,12 @@ func (r *KCPReconciler) handleDeletion(ctx context.Context, clusterName string, 
 
 	// Clean up workspace SA/RBAC/token (best effort)
 	r.cleanupWorkspaceResources(ctx, clusterClient)
+
+	// Delete platform namespace (contains kubeconfig secret + any leftover resources)
+	platformNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}
+	if err := r.PlatformClient.Delete(ctx, platformNS); client.IgnoreNotFound(err) != nil {
+		l.Error(err, "failed to delete platform namespace", "namespace", ns)
+	}
 
 	l.Info("cleanup complete", "namespace", ns)
 	return ctrl.Result{}, nil
@@ -522,6 +519,7 @@ func (r *KCPReconciler) workloadClientFromSecret(ctx context.Context, secretRef 
 	return cl, nil
 }
 
+
 func (r *KCPReconciler) setStatus(ctx context.Context, cl client.Client, obj *unstructured.Unstructured, phase apiv1alpha1.KroVersionRequestPhase, message string) error {
 	return r.setStatusWithVersions(ctx, cl, obj, phase, message, nil)
 }
@@ -653,21 +651,6 @@ func crdOnlyPostRenderers() []helmv2.PostRenderer {
 	return []helmv2.PostRenderer{{Kustomize: &helmv2.Kustomize{Patches: targets}}}
 }
 
-// countResourceGraphDefinitions returns the number of kro ResourceGraphDefinition
-// objects in the given workspace.
-func countResourceGraphDefinitions(ctx context.Context, cl client.Client) (int, error) {
-	list := &unstructured.UnstructuredList{}
-	list.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "kro.run",
-		Version: "v1alpha1",
-		Kind:    "ResourceGraphDefinitionList",
-	})
-	if err := cl.List(ctx, list); err != nil {
-		// If the CRD isn't installed yet, that's fine
-		return 0, client.IgnoreNotFound(err)
-	}
-	return len(list.Items), nil
-}
 
 // tenantNamespace derives a stable namespace name on the platform cluster.
 func tenantNamespace(clusterName string) string {
