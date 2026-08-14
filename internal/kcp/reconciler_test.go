@@ -9,7 +9,14 @@ import (
 
 func TestTenantNamespace(t *testing.T) {
 	assert.Equal(t, "kcp-abc123", tenantNamespace("abc123"))
-	assert.Equal(t, "kcp-root:consumer", tenantNamespace("root:consumer"))
+	assert.Equal(t, "kcp-root--consumer", tenantNamespace("root:consumer"))
+	assert.Equal(t, "kcp-root--org--ws", tenantNamespace("root:org:ws"))
+}
+
+func TestWorkloadNamespace(t *testing.T) {
+	assert.Equal(t, "kro-abc123", workloadNamespace("abc123"))
+	assert.Equal(t, "kro-root--consumer", workloadNamespace("root:consumer"))
+	assert.Equal(t, "kro-root--org--ws", workloadNamespace("root:org:ws"))
 }
 
 func TestIsTokenExpiring(t *testing.T) {

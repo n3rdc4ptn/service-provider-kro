@@ -2,6 +2,7 @@ package kcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -26,14 +28,18 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	apiv1alpha1 "github.com/openmcp-project/service-provider-kro/api/v1alpha1"
+	clustersv1alpha1 "github.com/openmcp-project/openmcp-operator/api/clusters/v1alpha1"
 )
 
 const (
-	ociRepositoryName = "kro-oci-repository"
-	helmReleaseName   = "kro-helm-release"
+	ociRepositoryName  = "kro-oci-repository"
+	helmReleaseName    = "kro-helm-release"
 	crdHelmReleaseName = "kro-crds-helm-release"
-	kroSystemNamespace  = "kro-system"
 	defaultReleaseName = "kro"
+
+	// kroSystemNamespace is used for the CRD-only HelmRelease targeting the kcp workspace.
+	// Each workspace is isolated so a fixed name is safe.
+	kroSystemNamespace = "kro-system"
 
 	kubeconfigMountPath = "/etc/kro/kubeconfig"
 	kubeconfigKey       = "kubeconfig"
@@ -177,7 +183,7 @@ func (r *KCPReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) 
 		return ctrl.Result{}, err
 	}
 
-	// Copy kcp kubeconfig to workload cluster's kro-system namespace
+	// Copy kcp kubeconfig to workload cluster's tenant namespace
 	if err := r.replicateKCPKubeconfigToWorkload(ctx, ns, clusterName, workloadAccess.SecretRef); err != nil {
 		_ = r.setStatus(ctx, cl, kvr, apiv1alpha1.KroVersionRequestPhaseFailed, fmt.Sprintf("Kubeconfig replication failed: %v", err))
 		return ctrl.Result{}, err
@@ -261,10 +267,26 @@ func (r *KCPReconciler) handleDeletion(ctx context.Context, clusterName string, 
 	// Clean up workspace SA/RBAC/token (best effort)
 	r.cleanupWorkspaceResources(ctx, clusterClient)
 
-	// Delete platform namespace (contains kubeconfig secret + any leftover resources)
-	platformNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}
-	if err := r.PlatformClient.Delete(ctx, platformNS); client.IgnoreNotFound(err) != nil {
-		l.Error(err, "failed to delete platform namespace", "namespace", ns)
+	// ponytail: platform namespace kept alive — other platform resources (Cluster, ClusterRequest)
+	// are created there outside our control. Delete only our own resources inside it.
+	// Clean up kubeconfig secret
+	kubeconfigSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name:      fmt.Sprintf(kubeconfigSecretFmt, clusterName),
+		Namespace: ns,
+	}}
+	if err := r.PlatformClient.Delete(ctx, kubeconfigSecret); client.IgnoreNotFound(err) != nil {
+		l.Error(err, "failed to delete kubeconfig secret")
+	}
+
+	// Clean up ClusterRequest + AccessRequest for the workload cluster
+	requestName := clusterName + workloadRequestSuffix
+	clusterReq := &clustersv1alpha1.ClusterRequest{ObjectMeta: metav1.ObjectMeta{Name: requestName, Namespace: ns}}
+	if err := r.PlatformClient.Delete(ctx, clusterReq); client.IgnoreNotFound(err) != nil {
+		l.Error(err, "failed to delete ClusterRequest")
+	}
+	accessReq := &clustersv1alpha1.AccessRequest{ObjectMeta: metav1.ObjectMeta{Name: requestName, Namespace: ns}}
+	if err := r.PlatformClient.Delete(ctx, accessReq); client.IgnoreNotFound(err) != nil {
+		l.Error(err, "failed to delete AccessRequest")
 	}
 
 	l.Info("cleanup complete", "namespace", ns)
@@ -392,15 +414,17 @@ func (r *KCPReconciler) reconcileCRDHelmRelease(ctx context.Context, version api
 }
 
 // reconcileKroHelmRelease creates HelmRelease #2: installs kro controller into the workload cluster,
-// with the kcp workspace kubeconfig mounted.
+// with the kcp workspace kubeconfig mounted. Each tenant gets its own namespace on the workload
+// cluster to avoid collisions when multiple tenants share a workload cluster.
 func (r *KCPReconciler) reconcileKroHelmRelease(ctx context.Context, version apiv1alpha1.KroVersion, namespace, clusterName string, workloadSecretRef *client.ObjectKey) error {
+	wlNamespace := workloadNamespace(clusterName)
 	helmRel := &helmv2.HelmRelease{ObjectMeta: metav1.ObjectMeta{Name: helmReleaseName, Namespace: namespace}}
 	_, err := ctrl.CreateOrUpdate(ctx, r.PlatformClient, helmRel, func() error {
 		helmRel.Spec = helmv2.HelmReleaseSpec{
 			ReleaseName:      defaultReleaseName,
 			Interval:         metav1.Duration{Duration: time.Minute},
-			TargetNamespace:  kroSystemNamespace,
-			StorageNamespace: kroSystemNamespace,
+			TargetNamespace:  wlNamespace,
+			StorageNamespace: wlNamespace,
 			Install: &helmv2.Install{
 				CRDs:            helmv2.Skip,
 				CreateNamespace: true,
@@ -419,7 +443,7 @@ func (r *KCPReconciler) reconcileKroHelmRelease(ctx context.Context, version api
 				Name:      ociRepositoryName,
 				Namespace: namespace,
 			},
-			Values: version.HelmValues,
+			Values: kcpHelmValues(version.HelmValues),
 			KubeConfig: &meta.KubeConfigReference{
 				SecretRef: &meta.SecretKeyReference{
 					Name: workloadSecretRef.Name,
@@ -434,8 +458,7 @@ func (r *KCPReconciler) reconcileKroHelmRelease(ctx context.Context, version api
 }
 
 // replicateKCPKubeconfigToWorkload copies the kcp kubeconfig secret from the platform
-// cluster into kro-system on the workload cluster so the kro deployment can mount it.
-// It builds a client to the workload cluster using the kubeconfig from workloadSecretRef.
+// cluster into the tenant's namespace on the workload cluster so the kro deployment can mount it.
 func (r *KCPReconciler) replicateKCPKubeconfigToWorkload(ctx context.Context, namespace, clusterName string, workloadSecretRef *client.ObjectKey) error {
 	// Read the kcp kubeconfig data from platform
 	kcpSecretName := fmt.Sprintf(kubeconfigSecretFmt, clusterName)
@@ -454,16 +477,23 @@ func (r *KCPReconciler) replicateKCPKubeconfigToWorkload(ctx context.Context, na
 		return fmt.Errorf("building workload client: %w", err)
 	}
 
-	// Ensure kro-system namespace exists on the workload cluster
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: kroSystemNamespace}}
-	if _, err := ctrl.CreateOrUpdate(ctx, workloadClient, ns, func() error { return nil }); err != nil {
-		return fmt.Errorf("ensuring namespace %s on workload cluster: %w", kroSystemNamespace, err)
+	// Ensure per-tenant namespace exists on the workload cluster
+	wlNS := workloadNamespace(clusterName)
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: wlNS}}
+	if _, err := ctrl.CreateOrUpdate(ctx, workloadClient, ns, func() error {
+		if ns.Labels == nil {
+			ns.Labels = map[string]string{}
+		}
+		ns.Labels[managedByLabel] = managedByLabelValue
+		return nil
+	}); err != nil {
+		return fmt.Errorf("ensuring namespace %s on workload cluster: %w", wlNS, err)
 	}
 
 	// Create/update the kcp kubeconfig secret on the workload cluster
 	target := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
 		Name:      kcpSecretName,
-		Namespace: kroSystemNamespace,
+		Namespace: wlNS,
 	}}
 	if _, err := ctrl.CreateOrUpdate(ctx, workloadClient, target, func() error {
 		target.Labels = map[string]string{managedByLabel: managedByLabelValue}
@@ -585,6 +615,9 @@ func kcpKubeconfigPostRenderers(clusterName string) []helmv2.PostRenderer {
 	secretName := fmt.Sprintf(kubeconfigSecretFmt, clusterName)
 	kubeconfigFilePath := kubeconfigMountPath + "/" + kubeconfigKey
 
+	// ponytail: patch deployment to mount kcp kubeconfig. Leader election namespace
+	// is set via helm values (config.leaderElectionNamespace) since "default" always
+	// exists in kcp workspaces but the per-tenant workload namespace does not.
 	patch := fmt.Sprintf(`apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -652,9 +685,20 @@ func crdOnlyPostRenderers() []helmv2.PostRenderer {
 }
 
 
+// sanitizeClusterName replaces characters illegal in Kubernetes namespace names.
+func sanitizeClusterName(clusterName string) string {
+	return strings.ReplaceAll(clusterName, ":", "--")
+}
+
 // tenantNamespace derives a stable namespace name on the platform cluster.
 func tenantNamespace(clusterName string) string {
-	return fmt.Sprintf("kcp-%s", clusterName)
+	return fmt.Sprintf("kcp-%s", sanitizeClusterName(clusterName))
+}
+
+// workloadNamespace derives a per-tenant namespace on the workload cluster.
+// Each tenant gets its own namespace to avoid collisions when sharing a workload cluster.
+func workloadNamespace(clusterName string) string {
+	return fmt.Sprintf("kro-%s", sanitizeClusterName(clusterName))
 }
 
 // ensurePlatformNamespace creates the namespace on the platform cluster if needed.
@@ -670,4 +714,36 @@ func ensurePlatformNamespace(ctx context.Context, cl client.Client, name string)
 		return fmt.Errorf("ensuring namespace %s: %w", name, err)
 	}
 	return nil
+}
+
+// kcpHelmValues merges config.leaderElectionNamespace="default" into the user-provided
+// helm values. kro uses its pod namespace for leader election on the target cluster
+// (kcp workspace), and "default" always exists there. Our override wins.
+func kcpHelmValues(userValues *apiextensionsv1.JSON) *apiextensionsv1.JSON {
+	values := map[string]interface{}{}
+	if userValues != nil && len(userValues.Raw) > 0 {
+		_ = json.Unmarshal(userValues.Raw, &values)
+	}
+	// Force leader election namespace — must override any user value
+	override := map[string]interface{}{
+		"config": map[string]interface{}{
+			"leaderElectionNamespace": "default",
+		},
+	}
+	mergeValues(values, override)
+	raw, _ := json.Marshal(values)
+	return &apiextensionsv1.JSON{Raw: raw}
+}
+
+// mergeValues deep-merges src into dst. src values win for non-map keys.
+func mergeValues(dst, src map[string]interface{}) {
+	for k, v := range src {
+		if srcMap, ok := v.(map[string]interface{}); ok {
+			if dstMap, ok := dst[k].(map[string]interface{}); ok {
+				mergeValues(dstMap, srcMap)
+				continue
+			}
+		}
+		dst[k] = v
+	}
 }
