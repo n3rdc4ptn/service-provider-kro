@@ -47,3 +47,12 @@ func TestBuildKubeconfigWithCA(t *testing.T) {
 	assert.Contains(t, got, "certificate-authority-data:")
 	assert.Contains(t, got, "insecure-skip-tls-verify: false")
 }
+
+func TestRewriteLoopbackForDocker(t *testing.T) {
+	assert.Equal(t, "https://host.docker.internal:6443/clusters/test",
+		rewriteLoopbackForDocker("https://127.0.0.1:6443/clusters/test"))
+	assert.Equal(t, "https://host.docker.internal:6443",
+		rewriteLoopbackForDocker("https://localhost:6443"))
+	assert.Equal(t, "https://kcp.example.com:6443",
+		rewriteLoopbackForDocker("https://kcp.example.com:6443"))
+}
