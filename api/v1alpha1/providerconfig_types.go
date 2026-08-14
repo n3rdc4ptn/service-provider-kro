@@ -53,6 +53,35 @@ type ProviderConfigSpec struct {
 	// +kubebuilder:default:="1m"
 	// +kubebuilder:validation:Format=duration
 	PollInterval *metav1.Duration `json:"pollInterval,omitempty"`
+
+	// KCP configures access to a kcp API server. When set, the controller
+	// operates in kcp mode: APIExports replace Kro CRs as the tenant-facing API,
+	// and APIBindings trigger kro deployments.
+	// +optional
+	KCP *KCPConfig `json:"kcp,omitempty"`
+}
+
+// KCPConfig holds connection details for a kcp API server.
+type KCPConfig struct {
+	// KubeconfigSecret references a secret containing a kubeconfig for the kcp
+	// API server. The secret must contain a "kubeconfig" key.
+	// +required
+	KubeconfigSecret KubeconfigSecretRef `json:"kubeconfigSecret"`
+
+	// ProviderWorkspace is the kcp workspace path where APIResourceSchemas and
+	// APIExports are managed. Example: "root:kro-provider"
+	// +required
+	ProviderWorkspace string `json:"providerWorkspace"`
+}
+
+// KubeconfigSecretRef identifies a secret holding a kubeconfig.
+type KubeconfigSecretRef struct {
+	// Name of the secret.
+	// +required
+	Name string `json:"name"`
+	// Namespace of the secret.
+	// +required
+	Namespace string `json:"namespace"`
 }
 
 // KroVersion defines a version of kro that can be installed.

@@ -41,6 +41,36 @@ spec:
           spec:
             description: spec defines the desired state of ProviderConfig
             properties:
+              kcp:
+                description: |-
+                  KCP configures access to a kcp API server. When set, the controller
+                  operates in kcp mode: APIExports replace Kro CRs as the tenant-facing API,
+                  and APIBindings trigger kro deployments.
+                properties:
+                  kubeconfigSecret:
+                    description: |-
+                      KubeconfigSecret references a secret containing a kubeconfig for the kcp
+                      API server. The secret must contain a "kubeconfig" key.
+                    properties:
+                      name:
+                        description: Name of the secret.
+                        type: string
+                      namespace:
+                        description: Namespace of the secret.
+                        type: string
+                    required:
+                    - name
+                    - namespace
+                    type: object
+                  providerWorkspace:
+                    description: |-
+                      ProviderWorkspace is the kcp workspace path where APIResourceSchemas and
+                      APIExports are managed. Example: "root:kro-provider"
+                    type: string
+                required:
+                - kubeconfigSecret
+                - providerWorkspace
+                type: object
               pollInterval:
                 default: 1m
                 description: PollInterval at which the controller requeues to detect

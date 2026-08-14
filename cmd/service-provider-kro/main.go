@@ -45,8 +45,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -59,6 +62,7 @@ import (
 
 	krosv1alpha1 "github.com/openmcp-project/service-provider-kro/api/v1alpha1"
 	"github.com/openmcp-project/service-provider-kro/internal/controller"
+	kcpkg "github.com/openmcp-project/service-provider-kro/internal/kcp"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -281,6 +285,19 @@ func main() {
 
 		return
 	}
+
+	// Check if kcp mode is configured by reading the ProviderConfig.
+	pc := &krosv1alpha1.ProviderConfig{}
+	if err := platformCluster.Client().Get(ctx, client.ObjectKey{Name: providerName}, pc); err != nil {
+		setupLog.Error(err, "Failed to get ProviderConfig", "name", providerName)
+		os.Exit(1)
+	}
+
+	if pc.Spec.KCP != nil {
+		runKCPMode(ctx, platformCluster, pc, podNamespace)
+		return
+	}
+
 	// run (sp controller deployment)
 	onboardingCluster, err := clusterAccessManager.CreateAndWaitForCluster(ctx, "onboarding-run",
 		clustersv1alpha1.PURPOSE_ONBOARDING, onboardingScheme, adminPermissions)
@@ -385,4 +402,58 @@ func initializePlatformCluster() (*clusters.Cluster, error) {
 		return nil, err
 	}
 	return platformCluster, nil
+}
+
+// runKCPMode starts the controller in kcp-aware mode. It provisions
+// a single APIExport for KroVersionRequest in the kcp provider workspace
+// and reconciles KroVersionRequest objects across consumer workspaces.
+func runKCPMode(ctx context.Context, platformCluster *clusters.Cluster, pc *krosv1alpha1.ProviderConfig, podNamespace string) {
+	setupLog.Info("starting in kcp mode", "providerWorkspace", pc.Spec.KCP.ProviderWorkspace)
+
+	kcpCfg, err := kcpkg.KCPRestConfig(ctx, platformCluster.Client(), pc.Spec.KCP)
+	if err != nil {
+		setupLog.Error(err, "Failed to build kcp rest.Config")
+		os.Exit(1)
+	}
+
+	// Build a kcp client for provisioning the APIExport.
+	kcpHTTPClient, err := rest.HTTPClientFor(kcpCfg)
+	if err != nil {
+		setupLog.Error(err, "Failed to create kcp HTTP client")
+		os.Exit(1)
+	}
+	kcpMapper, err := apiutil.NewDynamicRESTMapper(kcpCfg, kcpHTTPClient)
+	if err != nil {
+		setupLog.Error(err, "Failed to create kcp REST mapper")
+		os.Exit(1)
+	}
+	kcpClient, err := client.New(kcpCfg, client.Options{Scheme: kcpkg.KCPScheme(), Mapper: kcpMapper})
+	if err != nil {
+		setupLog.Error(err, "Failed to create kcp client")
+		os.Exit(1)
+	}
+
+	// Provision the single APIExport for KroVersionRequest.
+	provisioner := kcpkg.NewProvisioner(kcpClient)
+	if err := provisioner.Reconcile(ctx, pc); err != nil {
+		setupLog.Error(err, "Failed to provision kcp APIs")
+		os.Exit(1)
+	}
+	setupLog.Info("kcp API provisioning complete")
+
+	mcMgr, err := kcpkg.SetupManager(ctx, kcpCfg, kcpkg.SetupConfig{
+		PlatformClient: platformCluster.Client(),
+		PodNamespace:   podNamespace,
+		ProviderConfig: pc,
+	})
+	if err != nil {
+		setupLog.Error(err, "Failed to setup kcp multicluster manager")
+		os.Exit(1)
+	}
+
+	setupLog.Info("starting kcp multicluster manager")
+	if err := mcMgr.Start(ctrl.SetupSignalHandler()); err != nil {
+		setupLog.Error(err, "problem running kcp manager")
+		os.Exit(1)
+	}
 }

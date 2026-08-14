@@ -2,15 +2,15 @@ version: 3
 
 vars:
   NESTED_MODULES: api
-  API_DIRS: '{{.ROOT_DIR}}/api/v1alpha1/...'
-  MANIFEST_OUT: '{{.ROOT_DIR}}/api/crds/manifests'
-  CODE_DIRS: '{{.ROOT_DIR}}/cmd/... {{.ROOT_DIR}}/internal/... {{.ROOT_DIR}}/api/v1alpha1/... {{.ROOT_DIR}}/pkg/...'
-  COMPONENTS: 'service-provider-kro'
+  API_DIRS: "{{.ROOT_DIR}}/api/v1alpha1/..."
+  MANIFEST_OUT: "{{.ROOT_DIR}}/api/crds/manifests"
+  CODE_DIRS: "{{.ROOT_DIR}}/cmd/... {{.ROOT_DIR}}/internal/... {{.ROOT_DIR}}/api/v1alpha1/... {{.ROOT_DIR}}/pkg/..."
+  COMPONENTS: "service-provider-kro"
   CHART_COMPONENTS: "[]"
-  REPO_URL: 'https://github.com/openmcp-project/service-provider-kro'
-  COMMON_SCRIPT_DIR: '{{.ROOT_DIR}}/hack/common'
-  CRDS_COMPONENTS: 'service-provider-kro'
-  CRDS_PATH: '{{.ROOT_DIR}}/api/crds/manifests'
+  REPO_URL: "https://github.com/openmcp-project/service-provider-kro"
+  COMMON_SCRIPT_DIR: "{{.ROOT_DIR}}/hack/common"
+  CRDS_COMPONENTS: "service-provider-kro"
+  CRDS_PATH: "{{.ROOT_DIR}}/api/crds/manifests"
   LINTER_VERSION: v2.11.3
   CONTROLLER_GEN_VERSION: v0.20.1
 
@@ -30,6 +30,16 @@ tasks:
         sh: $COMMON_SCRIPT_DIR/get-version.sh
       ARCH:
         sh: uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/'
+
+  run:
+    desc: "Run the controller locally against a platform cluster"
+    env:
+      POD_NAMESPACE: '{{.POD_NAMESPACE | default "service-provider-kro"}}'
+    cmds:
+      - go run ./cmd/service-provider-kro init --provider-name {{.PROVIDER_NAME | default "kro"}} --environment {{.ENVIRONMENT | default "test"}} --metrics-bind-address 0 --metrics-secure=false {{.CLI_ARGS}}
+      - go run ./cmd/service-provider-kro run --provider-name {{.PROVIDER_NAME | default "kro"}} --environment {{.ENVIRONMENT | default "test"}} --metrics-bind-address 0 --metrics-secure=false {{.CLI_ARGS}}
+    vars:
+      PROVIDER_NAME: '{{.PROVIDER_NAME | default "kro"}}'
 
   test-e2e:
     desc: "Build image and run e2e tests"
