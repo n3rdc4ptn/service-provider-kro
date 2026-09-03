@@ -410,7 +410,7 @@ func initializePlatformCluster() (*clusters.Cluster, error) {
 func runKCPMode(ctx context.Context, platformCluster *clusters.Cluster, pc *krosv1alpha1.ProviderConfig, podNamespace string) {
 	setupLog.Info("starting in kcp mode", "providerWorkspace", pc.Spec.KCP.ProviderWorkspace)
 
-	kcpCfg, err := kcpkg.KCPRestConfig(ctx, platformCluster.Client(), pc.Spec.KCP)
+	kcpCfg, err := kcpkg.RestConfig(ctx, platformCluster.Client(), pc.Spec.KCP)
 	if err != nil {
 		setupLog.Error(err, "Failed to build kcp rest.Config")
 		os.Exit(1)
@@ -427,7 +427,7 @@ func runKCPMode(ctx context.Context, platformCluster *clusters.Cluster, pc *kros
 		setupLog.Error(err, "Failed to create kcp REST mapper")
 		os.Exit(1)
 	}
-	kcpClient, err := client.New(kcpCfg, client.Options{Scheme: kcpkg.KCPScheme(), Mapper: kcpMapper})
+	kcpClient, err := client.New(kcpCfg, client.Options{Scheme: kcpkg.Scheme(), Mapper: kcpMapper})
 	if err != nil {
 		setupLog.Error(err, "Failed to create kcp client")
 		os.Exit(1)

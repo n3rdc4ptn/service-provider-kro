@@ -47,8 +47,8 @@ func init() {
 	_ = corev1.AddToScheme(kcpScheme)
 }
 
-// KCPScheme returns the scheme containing kcp API types.
-func KCPScheme() *runtime.Scheme {
+// Scheme returns the scheme containing kcp API types.
+func Scheme() *runtime.Scheme {
 	return kcpScheme
 }
 
@@ -62,9 +62,9 @@ type SetupConfig struct {
 	ProviderConfig *apiv1alpha1.ProviderConfig
 }
 
-// KCPRestConfig builds a rest.Config for the kcp API server from the
+// RestConfig builds a rest.Config for the kcp API server from the
 // kubeconfig secret referenced in the ProviderConfig.
-func KCPRestConfig(ctx context.Context, platformClient client.Client, kcpCfg *apiv1alpha1.KCPConfig) (*rest.Config, error) {
+func RestConfig(ctx context.Context, platformClient client.Client, kcpCfg *apiv1alpha1.KCPConfig) (*rest.Config, error) {
 	secret := &corev1.Secret{}
 	key := client.ObjectKey{
 		Name:      kcpCfg.KubeconfigSecret.Name,
@@ -88,7 +88,7 @@ func KCPRestConfig(ctx context.Context, platformClient client.Client, kcpCfg *ap
 
 // SetupManager creates a multicluster-runtime manager wired to the kcp
 // apiexport provider. It watches KroVersionRequest objects across consumer workspaces.
-func SetupManager(ctx context.Context, kcpCfg *rest.Config, cfg SetupConfig) (mcmanager.Manager, error) {
+func SetupManager(_ context.Context, kcpCfg *rest.Config, cfg SetupConfig) (mcmanager.Manager, error) {
 	pc := cfg.ProviderConfig
 	if pc.Spec.KCP == nil {
 		return nil, fmt.Errorf("ProviderConfig.Spec.KCP must be set for kcp mode")
@@ -108,7 +108,7 @@ func SetupManager(ctx context.Context, kcpCfg *rest.Config, cfg SetupConfig) (mc
 		return nil, fmt.Errorf("creating multicluster manager: %w", err)
 	}
 
-	reconciler := &KCPReconciler{
+	reconciler := &Reconciler{
 		Manager:        mgr,
 		PlatformClient: cfg.PlatformClient,
 		PodNamespace:   cfg.PodNamespace,

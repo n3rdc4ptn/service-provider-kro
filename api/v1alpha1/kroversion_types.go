@@ -33,12 +33,13 @@ type KroVersionRequestSpec struct {
 // KroVersionRequestPhase represents the lifecycle phase of a KroVersionRequest.
 type KroVersionRequestPhase string
 
+// KroVersionRequestPhase constants represent the valid lifecycle phases of a KroVersionRequest.
 const (
-	KroVersionRequestPhasePending     KroVersionRequestPhase = "Pending"
+	KroVersionRequestPhasePending      KroVersionRequestPhase = "Pending"
 	KroVersionRequestPhaseProvisioning KroVersionRequestPhase = "Provisioning"
-	KroVersionRequestPhaseReady       KroVersionRequestPhase = "Ready"
-	KroVersionRequestPhaseFailed      KroVersionRequestPhase = "Failed"
-	KroVersionRequestPhaseTerminating KroVersionRequestPhase = "Terminating"
+	KroVersionRequestPhaseReady        KroVersionRequestPhase = "Ready"
+	KroVersionRequestPhaseFailed       KroVersionRequestPhase = "Failed"
+	KroVersionRequestPhaseTerminating  KroVersionRequestPhase = "Terminating"
 )
 
 // KroVersionRequestStatus defines the observed state of a KroVersionRequest.

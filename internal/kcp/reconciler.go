@@ -21,8 +21,8 @@ import (
 	apiv1alpha1 "github.com/openmcp-project/service-provider-kro/api/v1alpha1"
 )
 
-// KCPReconciler reconciles KroVersionRequest objects across consumer workspaces.
-type KCPReconciler struct {
+// Reconciler reconciles KroVersionRequest objects across consumer workspaces.
+type Reconciler struct {
 	// Manager is the multicluster manager providing per-cluster access.
 	Manager mcmanager.Manager
 	// PlatformClient talks to the platform cluster where Flux resources live.
@@ -38,7 +38,7 @@ type KCPReconciler struct {
 }
 
 // Reconcile handles a KroVersionRequest event from a consumer workspace.
-func (r *KCPReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
+func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	clusterName := string(req.ClusterName)
 	l := logf.FromContext(ctx).WithValues("cluster", clusterName, "name", req.Name)
 	l.Info("reconciling KroVersionRequest")
@@ -80,6 +80,15 @@ func (r *KCPReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) 
 			"Only one KroVersionRequest per workspace is allowed. This is not the oldest.")
 		return ctrl.Result{}, nil
 	}
+
+	return r.reconcileInstall(ctx, cl, inst, kvr)
+}
+
+// reconcileInstall validates the spec version, resolves a token, runs Ensure,
+// updates status, and returns the requeue result. It is split out of Reconcile
+// to keep cyclomatic complexity within the linter threshold.
+func (r *Reconciler) reconcileInstall(ctx context.Context, cl client.Client, inst *Installation, kvr *unstructured.Unstructured) (ctrl.Result, error) {
+	l := logf.FromContext(ctx)
 
 	// Extract and validate version
 	spec, _, _ := unstructured.NestedMap(kvr.Object, "spec")
@@ -126,7 +135,7 @@ func (r *KCPReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) 
 }
 
 // handleInstallationDelete runs Installation.Delete and updates status if possible.
-func (r *KCPReconciler) handleInstallationDelete(ctx context.Context, inst *Installation, cl client.Client, kvr *unstructured.Unstructured) (ctrl.Result, error) {
+func (r *Reconciler) handleInstallationDelete(ctx context.Context, inst *Installation, cl client.Client, kvr *unstructured.Unstructured) (ctrl.Result, error) {
 	status := inst.Delete(ctx)
 
 	// Best-effort workspace cleanup (SA/RBAC) — only if we still have access
@@ -146,7 +155,7 @@ func (r *KCPReconciler) handleInstallationDelete(ctx context.Context, inst *Inst
 }
 
 // resolveToken returns a valid kubeconfig and token expiry, refreshing if needed.
-func (r *KCPReconciler) resolveToken(ctx context.Context, workspaceClient client.Client, inst *Installation) ([]byte, time.Time, error) {
+func (r *Reconciler) resolveToken(ctx context.Context, workspaceClient client.Client, inst *Installation) ([]byte, time.Time, error) {
 	// Check for cached token
 	if valid, expiry := inst.ReadExistingToken(ctx); valid && !IsTokenExpiring(expiry) {
 		secret := &corev1.Secret{}
@@ -173,7 +182,7 @@ func (r *KCPReconciler) resolveToken(ctx context.Context, workspaceClient client
 
 // --- helpers ---
 
-func (r *KCPReconciler) newKroVersionRequest() *unstructured.Unstructured {
+func (r *Reconciler) newKroVersionRequest() *unstructured.Unstructured {
 	kvr := &unstructured.Unstructured{}
 	kvr.SetGroupVersionKind(schema.GroupVersionKind{
 		Group:   apiv1alpha1.GroupVersion.Group,
@@ -183,7 +192,7 @@ func (r *KCPReconciler) newKroVersionRequest() *unstructured.Unstructured {
 	return kvr
 }
 
-func (r *KCPReconciler) clusterClient(ctx context.Context, name multicluster.ClusterName) (client.Client, error) {
+func (r *Reconciler) clusterClient(ctx context.Context, name multicluster.ClusterName) (client.Client, error) {
 	cl, err := r.Manager.GetCluster(ctx, name)
 	if err != nil {
 		return nil, err
@@ -191,7 +200,7 @@ func (r *KCPReconciler) clusterClient(ctx context.Context, name multicluster.Clu
 	return cl.GetClient(), nil
 }
 
-func (r *KCPReconciler) isOldestInWorkspace(ctx context.Context, cl client.Client, current *unstructured.Unstructured) (bool, error) {
+func (r *Reconciler) isOldestInWorkspace(ctx context.Context, cl client.Client, current *unstructured.Unstructured) (bool, error) {
 	list := &unstructured.UnstructuredList{}
 	list.SetGroupVersionKind(schema.GroupVersionKind{
 		Group:   apiv1alpha1.GroupVersion.Group,
@@ -214,7 +223,7 @@ func (r *KCPReconciler) isOldestInWorkspace(ctx context.Context, cl client.Clien
 	return true, nil
 }
 
-func (r *KCPReconciler) cleanupWorkspaceResources(ctx context.Context, cl client.Client) {
+func (r *Reconciler) cleanupWorkspaceResources(ctx context.Context, cl client.Client) {
 	// Best-effort cleanup of SA, ClusterRole, ClusterRoleBinding in the workspace
 	sa := &unstructured.Unstructured{}
 	sa.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ServiceAccount"})
@@ -233,17 +242,17 @@ func (r *KCPReconciler) cleanupWorkspaceResources(ctx context.Context, cl client
 	_ = cl.Delete(ctx, cr)
 }
 
-func (r *KCPReconciler) setStatus(ctx context.Context, cl client.Client, obj *unstructured.Unstructured, phase apiv1alpha1.KroVersionRequestPhase, message string) error {
+func (r *Reconciler) setStatus(ctx context.Context, cl client.Client, obj *unstructured.Unstructured, phase apiv1alpha1.KroVersionRequestPhase, message string) error {
 	return r.setStatusWithVersions(ctx, cl, obj, phase, message, nil)
 }
 
-func (r *KCPReconciler) setStatusWithVersions(ctx context.Context, cl client.Client, obj *unstructured.Unstructured, phase apiv1alpha1.KroVersionRequestPhase, message string, versions []string) error {
-	status := map[string]interface{}{
+func (r *Reconciler) setStatusWithVersions(ctx context.Context, cl client.Client, obj *unstructured.Unstructured, phase apiv1alpha1.KroVersionRequestPhase, message string, versions []string) error {
+	status := map[string]any{
 		"phase":   string(phase),
 		"message": message,
 	}
 	if versions != nil {
-		versionInterfaces := make([]interface{}, len(versions))
+		versionInterfaces := make([]any, len(versions))
 		for i, v := range versions {
 			versionInterfaces[i] = v
 		}
@@ -262,7 +271,7 @@ func (r *KCPReconciler) setStatusWithVersions(ctx context.Context, cl client.Cli
 	return cl.Status().Update(ctx, obj)
 }
 
-func (r *KCPReconciler) availableVersions() []string {
+func (r *Reconciler) availableVersions() []string {
 	versions := make([]string, 0, len(r.ProviderConfig.Spec.Versions))
 	for _, v := range r.ProviderConfig.Spec.Versions {
 		versions = append(versions, v.Version)
@@ -270,7 +279,7 @@ func (r *KCPReconciler) availableVersions() []string {
 	return versions
 }
 
-func (r *KCPReconciler) workspaceServerURL(clusterName string) string {
+func (r *Reconciler) workspaceServerURL(clusterName string) string {
 	host := r.KCPServerURL
 	if u, err := url.Parse(host); err == nil {
 		host = u.Scheme + "://" + u.Host

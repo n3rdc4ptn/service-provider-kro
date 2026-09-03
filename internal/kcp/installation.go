@@ -187,7 +187,7 @@ type EnsureParams struct {
 
 // --- private methods ---
 
-func (i *Installation) failed(format string, args ...interface{}) InstallationStatus {
+func (i *Installation) failed(format string, args ...any) InstallationStatus {
 	return InstallationStatus{
 		Phase:   apiv1alpha1.KroVersionRequestPhaseFailed,
 		Message: fmt.Sprintf(format, args...),
@@ -522,12 +522,12 @@ func crdOnlyPostRenderers() []helmv2.PostRenderer {
 // kcpHelmValues merges config.leaderElectionNamespace="default" into the user-provided
 // helm values. Our override always wins.
 func kcpHelmValues(userValues *apiextensionsv1.JSON) *apiextensionsv1.JSON {
-	values := map[string]interface{}{}
+	values := map[string]any{}
 	if userValues != nil && len(userValues.Raw) > 0 {
 		_ = json.Unmarshal(userValues.Raw, &values)
 	}
-	override := map[string]interface{}{
-		"config": map[string]interface{}{
+	override := map[string]any{
+		"config": map[string]any{
 			"leaderElectionNamespace": "default",
 		},
 	}
@@ -537,10 +537,10 @@ func kcpHelmValues(userValues *apiextensionsv1.JSON) *apiextensionsv1.JSON {
 }
 
 // mergeValues deep-merges src into dst. src values win for non-map keys.
-func mergeValues(dst, src map[string]interface{}) {
+func mergeValues(dst, src map[string]any) {
 	for k, v := range src {
-		if srcMap, ok := v.(map[string]interface{}); ok {
-			if dstMap, ok := dst[k].(map[string]interface{}); ok {
+		if srcMap, ok := v.(map[string]any); ok {
+			if dstMap, ok := dst[k].(map[string]any); ok {
 				mergeValues(dstMap, srcMap)
 				continue
 			}
