@@ -8,8 +8,11 @@ import (
 )
 
 //go:embed manifests
+
+// CRDFS holds the embedded CRD manifest files.
 var CRDFS embed.FS
 
+// CRDs returns all CustomResourceDefinitions embedded in the manifests directory.
 func CRDs() ([]*apiextv1.CustomResourceDefinition, error) {
 	return crdutil.CRDsFromFileSystem(CRDFS, "manifests")
 }

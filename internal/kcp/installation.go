@@ -284,7 +284,7 @@ func (i *Installation) ensureOCIRepository(ctx context.Context, version apiv1alp
 	return err
 }
 
-func (i *Installation) ensureCRDHelmRelease(ctx context.Context, version apiv1alpha1.KroVersion) error {
+func (i *Installation) ensureCRDHelmRelease(ctx context.Context, _ apiv1alpha1.KroVersion) error {
 	ns := i.namespace()
 	helmRel := &helmv2.HelmRelease{ObjectMeta: metav1.ObjectMeta{Name: crdHelmReleaseName, Namespace: ns}}
 	_, err := ctrl.CreateOrUpdate(ctx, i.PlatformClient, helmRel, func() error {
