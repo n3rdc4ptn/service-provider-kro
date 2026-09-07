@@ -72,6 +72,14 @@ type KCPConfig struct {
 	// APIExports are managed. Example: "root:kro-provider"
 	// +required
 	ProviderWorkspace string `json:"providerWorkspace"`
+
+	// ExternalURL is the kcp API server URL as reachable from workload clusters.
+	// When set, kubeconfigs written into workload clusters use this URL instead of
+	// the one derived from the kubeconfig secret. Useful when the controller connects
+	// via localhost/port-forward but workloads must use a stable in-cluster address.
+	// Example: "https://kcp.kcp-system.svc:6443"
+	// +optional
+	ExternalURL string `json:"externalURL,omitempty"`
 }
 
 // KubeconfigSecretRef identifies a secret holding a kubeconfig.

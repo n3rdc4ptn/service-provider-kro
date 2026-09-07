@@ -33,6 +33,10 @@ type Reconciler struct {
 	ProviderConfig *apiv1alpha1.ProviderConfig
 	// KCPServerURL is the kcp API server URL for building kubeconfigs.
 	KCPServerURL string
+	// KCPConfig carries admin credentials for TokenRequest via the kcp front-proxy.
+	// The virtual workspace client (per-cluster) is used for SA/RBAC, but subresources
+	// like serviceaccounts/token are not proxied by the virtual workspace.
+	KCPConfig *rest.Config
 }
 
 // Reconcile handles a KroVersionRequest event from a consumer workspace.
@@ -52,11 +56,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		// Workspace gone (APIBinding removed) — still clean up platform resources
 		l.Info("workspace unreachable, cleaning up platform resources", "error", err)
 		return r.handleInstallationDelete(ctx, inst, nil, nil)
-	}
-
-	clusterCfg, err := r.clusterConfig(ctx, req.ClusterName)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("getting cluster config: %w", err)
 	}
 
 	// Read the KroVersionRequest from the workspace
@@ -84,13 +83,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	return r.reconcileInstall(ctx, cl, clusterCfg, inst, kvr)
+	return r.reconcileInstall(ctx, cl, inst, kvr)
 }
 
 // reconcileInstall validates the spec version, resolves a token, runs Ensure,
 // updates status, and returns the requeue result. It is split out of Reconcile
 // to keep cyclomatic complexity within the linter threshold.
-func (r *Reconciler) reconcileInstall(ctx context.Context, cl client.Client, clusterCfg *rest.Config, inst *Installation, kvr *unstructured.Unstructured) (ctrl.Result, error) {
+func (r *Reconciler) reconcileInstall(ctx context.Context, cl client.Client, inst *Installation, kvr *unstructured.Unstructured) (ctrl.Result, error) {
 	l := logf.FromContext(ctx)
 
 	// Extract and validate version
@@ -108,7 +107,7 @@ func (r *Reconciler) reconcileInstall(ctx context.Context, cl client.Client, clu
 	}
 
 	// Resolve workspace token
-	kubeconfigData, tokenExpiry, err := r.resolveToken(ctx, cl, clusterCfg, inst)
+	kubeconfigData, tokenExpiry, err := r.resolveToken(ctx, cl, inst)
 	if err != nil {
 		_ = r.setStatus(ctx, cl, kvr, apiv1alpha1.KroVersionRequestPhaseFailed, fmt.Sprintf("Token provisioning failed: %v", err))
 		return ctrl.Result{}, err
@@ -158,7 +157,7 @@ func (r *Reconciler) handleInstallationDelete(ctx context.Context, inst *Install
 }
 
 // resolveToken returns a valid kubeconfig and token expiry, refreshing if needed.
-func (r *Reconciler) resolveToken(ctx context.Context, workspaceClient client.Client, clusterCfg *rest.Config, inst *Installation) ([]byte, time.Time, error) {
+func (r *Reconciler) resolveToken(ctx context.Context, workspaceClient client.Client, inst *Installation) ([]byte, time.Time, error) {
 	// Check for cached token
 	if valid, expiry := inst.ReadExistingToken(ctx); valid && !IsTokenExpiring(expiry) {
 		secret := &corev1.Secret{}
@@ -172,11 +171,9 @@ func (r *Reconciler) resolveToken(ctx context.Context, workspaceClient client.Cl
 		}
 	}
 
-	// Need fresh token — use the cluster's own scoped config so credentials
-	// travel through the virtual workspace (PermissionClaim-granted access),
-	// not through the raw cluster URL where the service provider SA has no rights.
+	// Need fresh token — SA/RBAC via virtual workspace client, TokenRequest via front-proxy.
 	serverURL := r.workspaceServerURL(inst.ClusterName)
-	tokenResult, err := EnsureWorkspaceToken(ctx, workspaceClient, clusterCfg)
+	tokenResult, err := EnsureWorkspaceToken(ctx, workspaceClient, r.KCPConfig)
 	if err != nil {
 		return nil, time.Time{}, err
 	}
@@ -203,14 +200,6 @@ func (r *Reconciler) clusterClient(ctx context.Context, name multicluster.Cluste
 		return nil, err
 	}
 	return cl.GetClient(), nil
-}
-
-func (r *Reconciler) clusterConfig(ctx context.Context, name multicluster.ClusterName) (*rest.Config, error) {
-	cl, err := r.Manager.GetCluster(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	return cl.GetConfig(), nil
 }
 
 func (r *Reconciler) isOldestInWorkspace(ctx context.Context, cl client.Client, current *unstructured.Unstructured) (bool, error) {
@@ -294,22 +283,15 @@ func (r *Reconciler) availableVersions() []string {
 
 func (r *Reconciler) workspaceServerURL(clusterName string) string {
 	host := r.KCPServerURL
+	// If an external URL is configured, use it — the controller may connect via
+	// localhost/port-forward while workloads need a stable in-cluster address.
+	if r.ProviderConfig.Spec.KCP != nil && r.ProviderConfig.Spec.KCP.ExternalURL != "" {
+		host = r.ProviderConfig.Spec.KCP.ExternalURL
+	}
 	if u, err := url.Parse(host); err == nil {
 		host = u.Scheme + "://" + u.Host
 	}
-	host = rewriteLoopbackForDocker(host)
 	return fmt.Sprintf("%s/clusters/%s", host, clusterName)
-}
-
-// rewriteLoopbackForDocker rewrites 127.0.0.1 / localhost to host.docker.internal
-// so that kubeconfigs stored in secrets work from inside Docker containers.
-func rewriteLoopbackForDocker(serverURL string) string {
-	for _, loopback := range []string{"://127.0.0.1", "://localhost"} {
-		if idx := strings.Index(serverURL, loopback); idx >= 0 {
-			return serverURL[:idx] + "://host.docker.internal" + serverURL[idx+len(loopback):]
-		}
-	}
-	return serverURL
 }
 
 // sanitizeClusterName replaces characters illegal in Kubernetes namespace names.

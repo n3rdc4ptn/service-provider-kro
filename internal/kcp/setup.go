@@ -114,6 +114,7 @@ func SetupManager(_ context.Context, kcpCfg *rest.Config, cfg SetupConfig) (mcma
 		PodNamespace:   cfg.PodNamespace,
 		ProviderConfig: cfg.ProviderConfig,
 		KCPServerURL:   kcpCfg.Host,
+		KCPConfig:      kcpCfg,
 	}
 
 	// Watch KroVersionRequest objects across all consumer workspaces.

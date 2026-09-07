@@ -67,6 +67,14 @@ spec:
                       ProviderWorkspace is the kcp workspace path where APIResourceSchemas and
                       APIExports are managed. Example: "root:kro-provider"
                     type: string
+                  externalURL:
+                    description: |-
+                      ExternalURL is the kcp API server URL as reachable from workload clusters.
+                      When set, kubeconfigs written into workload clusters use this URL instead of
+                      the one derived from the kubeconfig secret. Useful when the controller connects
+                      via localhost/port-forward but workloads must use a stable in-cluster address.
+                      Example: "https://kcp.kcp-system.svc:6443"
+                    type: string
                 required:
                 - kubeconfigSecret
                 - providerWorkspace
