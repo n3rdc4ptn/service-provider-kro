@@ -4,10 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"net/url"
 	"time"
 
-	"github.com/kcp-dev/logicalcluster/v3"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -49,8 +47,8 @@ type WorkspaceTokenResult struct {
 
 // EnsureWorkspaceToken ensures a ServiceAccount, ClusterRole, ClusterRoleBinding exist
 // in the consumer workspace (via virtual workspace client), then requests a token
-// via the TokenRequest API (via direct workspace client).
-func EnsureWorkspaceToken(ctx context.Context, workspaceClient client.Client, kcpConfig *rest.Config) (*WorkspaceTokenResult, error) {
+// via the TokenRequest API using the same scoped config.
+func EnsureWorkspaceToken(ctx context.Context, workspaceClient client.Client, clusterCfg *rest.Config) (*WorkspaceTokenResult, error) {
 	l := logf.FromContext(ctx)
 
 	// Ensure ServiceAccount
@@ -105,13 +103,8 @@ func EnsureWorkspaceToken(ctx context.Context, workspaceClient client.Client, kc
 		return nil, fmt.Errorf("ensuring ClusterRoleBinding: %w", err)
 	}
 
-	// Re-read SA to get the logical cluster annotation
-	if err := workspaceClient.Get(ctx, client.ObjectKeyFromObject(sa), sa); err != nil {
-		return nil, fmt.Errorf("re-reading ServiceAccount: %w", err)
-	}
-
-	// Request token via TokenRequest API using direct workspace client
-	tokenResult, err := tokenFromServiceAccount(ctx, kcpConfig, sa)
+	// Request token via TokenRequest API using the scoped cluster config
+	tokenResult, err := tokenFromServiceAccount(ctx, clusterCfg, sa)
 	if err != nil {
 		return nil, fmt.Errorf("requesting token: %w", err)
 	}
@@ -120,25 +113,13 @@ func EnsureWorkspaceToken(ctx context.Context, workspaceClient client.Client, kc
 	return tokenResult, nil
 }
 
-// tokenFromServiceAccount creates an ephemeral token via the TokenRequest API,
-// using a direct client to the workspace (derived from logicalcluster annotation on the SA).
-func tokenFromServiceAccount(ctx context.Context, kcpConfig *rest.Config, sa *corev1.ServiceAccount) (*WorkspaceTokenResult, error) {
-	clusterName := logicalcluster.From(sa)
-	if clusterName.Empty() {
-		return nil, fmt.Errorf("service account %s/%s missing annotation %s", sa.Namespace, sa.Name, logicalcluster.AnnotationKey)
-	}
-
-	u, err := url.Parse(kcpConfig.Host)
+// tokenFromServiceAccount creates an ephemeral token via the TokenRequest API.
+// clusterCfg must already be scoped to the target workspace (virtual workspace URL
+// + cluster path) so the call travels through the PermissionClaim-granted access.
+func tokenFromServiceAccount(ctx context.Context, clusterCfg *rest.Config, sa *corev1.ServiceAccount) (*WorkspaceTokenResult, error) {
+	clientset, err := kubernetes.NewForConfig(clusterCfg)
 	if err != nil {
-		return nil, fmt.Errorf("parsing kcp config host: %w", err)
-	}
-
-	wsConfig := rest.CopyConfig(kcpConfig)
-	wsConfig.Host = (&url.URL{Scheme: u.Scheme, Host: u.Host}).String() + clusterName.Path().RequestPath()
-
-	clientset, err := kubernetes.NewForConfig(wsConfig)
-	if err != nil {
-		return nil, fmt.Errorf("creating clientset for cluster %s: %w", clusterName, err)
+		return nil, fmt.Errorf("creating clientset: %w", err)
 	}
 
 	expirationSeconds := int64(tokenLifetime.Seconds())

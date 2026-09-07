@@ -33,8 +33,6 @@ type Reconciler struct {
 	ProviderConfig *apiv1alpha1.ProviderConfig
 	// KCPServerURL is the kcp API server URL for building kubeconfigs.
 	KCPServerURL string
-	// KCPConfig is the REST config for the kcp API server (used for TokenRequest).
-	KCPConfig *rest.Config
 }
 
 // Reconcile handles a KroVersionRequest event from a consumer workspace.
@@ -54,6 +52,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		// Workspace gone (APIBinding removed) — still clean up platform resources
 		l.Info("workspace unreachable, cleaning up platform resources", "error", err)
 		return r.handleInstallationDelete(ctx, inst, nil, nil)
+	}
+
+	clusterCfg, err := r.clusterConfig(ctx, req.ClusterName)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("getting cluster config: %w", err)
 	}
 
 	// Read the KroVersionRequest from the workspace
@@ -81,13 +84,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	return r.reconcileInstall(ctx, cl, inst, kvr)
+	return r.reconcileInstall(ctx, cl, clusterCfg, inst, kvr)
 }
 
 // reconcileInstall validates the spec version, resolves a token, runs Ensure,
 // updates status, and returns the requeue result. It is split out of Reconcile
 // to keep cyclomatic complexity within the linter threshold.
-func (r *Reconciler) reconcileInstall(ctx context.Context, cl client.Client, inst *Installation, kvr *unstructured.Unstructured) (ctrl.Result, error) {
+func (r *Reconciler) reconcileInstall(ctx context.Context, cl client.Client, clusterCfg *rest.Config, inst *Installation, kvr *unstructured.Unstructured) (ctrl.Result, error) {
 	l := logf.FromContext(ctx)
 
 	// Extract and validate version
@@ -105,7 +108,7 @@ func (r *Reconciler) reconcileInstall(ctx context.Context, cl client.Client, ins
 	}
 
 	// Resolve workspace token
-	kubeconfigData, tokenExpiry, err := r.resolveToken(ctx, cl, inst)
+	kubeconfigData, tokenExpiry, err := r.resolveToken(ctx, cl, clusterCfg, inst)
 	if err != nil {
 		_ = r.setStatus(ctx, cl, kvr, apiv1alpha1.KroVersionRequestPhaseFailed, fmt.Sprintf("Token provisioning failed: %v", err))
 		return ctrl.Result{}, err
@@ -155,7 +158,7 @@ func (r *Reconciler) handleInstallationDelete(ctx context.Context, inst *Install
 }
 
 // resolveToken returns a valid kubeconfig and token expiry, refreshing if needed.
-func (r *Reconciler) resolveToken(ctx context.Context, workspaceClient client.Client, inst *Installation) ([]byte, time.Time, error) {
+func (r *Reconciler) resolveToken(ctx context.Context, workspaceClient client.Client, clusterCfg *rest.Config, inst *Installation) ([]byte, time.Time, error) {
 	// Check for cached token
 	if valid, expiry := inst.ReadExistingToken(ctx); valid && !IsTokenExpiring(expiry) {
 		secret := &corev1.Secret{}
@@ -169,9 +172,11 @@ func (r *Reconciler) resolveToken(ctx context.Context, workspaceClient client.Cl
 		}
 	}
 
-	// Need fresh token
+	// Need fresh token — use the cluster's own scoped config so credentials
+	// travel through the virtual workspace (PermissionClaim-granted access),
+	// not through the raw cluster URL where the service provider SA has no rights.
 	serverURL := r.workspaceServerURL(inst.ClusterName)
-	tokenResult, err := EnsureWorkspaceToken(ctx, workspaceClient, r.KCPConfig)
+	tokenResult, err := EnsureWorkspaceToken(ctx, workspaceClient, clusterCfg)
 	if err != nil {
 		return nil, time.Time{}, err
 	}
@@ -198,6 +203,14 @@ func (r *Reconciler) clusterClient(ctx context.Context, name multicluster.Cluste
 		return nil, err
 	}
 	return cl.GetClient(), nil
+}
+
+func (r *Reconciler) clusterConfig(ctx context.Context, name multicluster.ClusterName) (*rest.Config, error) {
+	cl, err := r.Manager.GetCluster(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return cl.GetConfig(), nil
 }
 
 func (r *Reconciler) isOldestInWorkspace(ctx context.Context, cl client.Client, current *unstructured.Unstructured) (bool, error) {
