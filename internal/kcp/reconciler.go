@@ -178,7 +178,7 @@ func (r *Reconciler) resolveToken(ctx context.Context, workspaceClient client.Cl
 		return nil, time.Time{}, err
 	}
 
-	kubeconfigData := BuildKubeconfig(serverURL, tokenResult.Token, nil)
+	kubeconfigData := BuildKubeconfig(serverURL, tokenResult.Token, r.KCPConfig.CAData)
 	return kubeconfigData, tokenResult.ExpirationTimestamp, nil
 }
 
